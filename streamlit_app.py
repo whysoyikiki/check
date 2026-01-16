@@ -20,26 +20,24 @@ msg_pattern = re.compile(
     r"^\[(?P<name>[^\]]+)\]\s+\[(?P<ampm>오전|오후)\s(?P<hour>\d{1,2}):(?P<minute>\d{2})\]"
 )
 
-# 별칭 통합 예시
-alias_map = {
-    "NEB 신승희 언니": "신승희",
-    "신승희": "신승희",
-    # 필요한 별칭 추가 가능
-}
-
 def format_diff(minutes):
     sign = "+" if minutes >= 0 else "-"
     minutes = abs(minutes)
     return f"{sign}{minutes//60}시간 {minutes%60}분"
 
 def get_daily_standard(text):
-    """근무시간 기준 결정: 반차/반반차/정상근무"""
     if "반반차" in text:
-        return 7*60
+        return 7 * 60
     elif "반차" in text:
-        return 4*60
-    else:
-        return DAILY_STANDARD_MIN
+        return 4 * 60
+    return DAILY_STANDARD_MIN
+
+def get_suffix(text):
+    if "반반차" in text:
+        return " (반반차)"
+    elif "반차" in text:
+        return " (반차)"
+    return ""
 
 if uploaded_file and start_monday:
     try:
@@ -53,20 +51,20 @@ if uploaded_file and start_monday:
     records = []
     current_date, current_weekday = None, None
 
-    # ------------------------
-    # 메시지 파싱
-    # ------------------------
     for line in lines:
         line = line.strip()
+
         d = date_pattern.match(line)
         if d:
             current_date = datetime(int(d.group(1)), int(d.group(2)), int(d.group(3))).date()
             current_weekday = d.group(4)
             continue
 
-        if not current_date or not (start_date <= current_date <= end_date):
+        if not current_date:
             continue
-        if current_weekday not in ["월","화","수","목","금"]:
+        if not (start_date <= current_date <= end_date):
+            continue
+        if current_weekday not in ["월", "화", "수", "목", "금"]:
             continue
 
         m = msg_pattern.match(line)
@@ -75,46 +73,34 @@ if uploaded_file and start_monday:
 
         hour = int(m.group("hour"))
         minute = int(m.group("minute"))
-        if m.group("ampm")=="오후" and hour!=12:
-            hour+=12
-        if m.group("ampm")=="오전" and hour==12:
-            hour=0
 
-        # 이름 추출: 한 줄에 여러명 가능
-        name_text = line.split("]")[-1]  # 메시지 끝부분에서 이름 추출
-        name_text = re.sub(r"(퇴근|출근|출장|반차|반반차)", "", name_text)
-        names_in_line = [n.strip() for n in name_text.split() if n.strip()]
-        standardized_names = [alias_map.get(n, n) for n in names_in_line]
+        if m.group("ampm") == "오후" and hour != 12:
+            hour += 12
+        if m.group("ampm") == "오전" and hour == 12:
+            hour = 0
 
-        daily_standard_min = get_daily_standard(line)
-
-        for name in standardized_names:
-            records.append({
-                "이름": name,
-                "날짜": current_date,
-                "요일": current_weekday,
-                "시간": datetime.combine(current_date, datetime.min.time()) + timedelta(hours=hour, minutes=minute),
-                "일일기준분": daily_standard_min,
-                "원문": line
-            })
+        records.append({
+            "이름": m.group("name"),
+            "날짜": current_date,
+            "요일": current_weekday,
+            "시간": datetime.combine(current_date, datetime.min.time()) + timedelta(hours=hour, minutes=minute),
+            "기준분": get_daily_standard(line),
+            "원문": line
+        })
 
     df = pd.DataFrame(records)
     if df.empty:
         st.warning("데이터를 찾을 수 없습니다.")
         st.stop()
 
-    names = sorted(df["이름"].unique())
-    target_name = st.selectbox("👤 분석 대상자 선택", names)
+    target_name = st.selectbox("👤 분석 대상자 선택", sorted(df["이름"].unique()))
     df = df[df["이름"] == target_name]
 
-    # ------------------------
-    # 전체 상세 분석표 생성
-    # ------------------------
     rows = []
-    week_start = None
+    weekly_data = {}
     week_worked = 0
     week_days = 0
-    weekly_data = {}
+    week_start = None
 
     for date, g in df.groupby("날짜"):
         g = g.sort_values("시간")
@@ -133,18 +119,12 @@ if uploaded_file and start_monday:
             week_worked = 0
             week_days = 0
 
-        if len(g) >= 2:
-            start = g.iloc[0]["시간"]
-            end = g.iloc[-1]["시간"]
-            worked = int((end - start).total_seconds() // 60)
-            daily_standard = g.iloc[0]["일일기준분"]
+        suffix = get_suffix(g.iloc[0]["원문"])
+        daily_standard = g.iloc[0]["기준분"]
 
-            # 반차/반반차 표시
-            suffix = ""
-            if "반반차" in g.iloc[0]["원문"]:
-                suffix = " (반반차)"
-            elif "반차" in g.iloc[0]["원문"]:
-                suffix = " (반차)"
+        if len(g) >= 2:
+            start, end = g.iloc[0]["시간"], g.iloc[-1]["시간"]
+            worked = int((end - start).total_seconds() // 60)
 
             rows.append({
                 "이름": target_name,
@@ -160,12 +140,11 @@ if uploaded_file and start_monday:
             week_days += 1
             weekly_data.setdefault(current_week_start, {})[g.iloc[0]["요일"]] = g
         else:
-            only_time = g.iloc[0]["시간"]
             rows.append({
                 "이름": target_name,
                 "날짜": date.strftime("%Y-%m-%d"),
                 "요일": g.iloc[0]["요일"],
-                "출근": only_time.strftime("%H:%M"),
+                "출근": g.iloc[0]["시간"].strftime("%H:%M"),
                 "퇴근": "",
                 "시간": "퇴근 기록 없음",
                 "주간합계": ""
@@ -174,7 +153,7 @@ if uploaded_file and start_monday:
 
         week_start = current_week_start
 
-    if week_days > 0:
+    if week_days:
         rows.append({
             "이름": "주간합계",
             "날짜": "",
@@ -186,64 +165,58 @@ if uploaded_file and start_monday:
         })
 
     result_df = pd.DataFrame(rows)
-
     st.subheader("📋 분석 결과")
     st.dataframe(result_df, use_container_width=True)
 
-    # 엑셀 다운로드
     buffer = BytesIO()
     result_df.to_excel(buffer, index=False)
-    st.download_button(
-        "⬇ 엑셀 다운로드",
-        data=buffer.getvalue(),
-        file_name="출퇴근_기록.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    st.download_button("⬇ 엑셀 다운로드", buffer.getvalue(), "출퇴근_기록.xlsx")
 
-    # ------------------------
-    # 간략 주간 요약표
-    # ------------------------
+    # ---------------- 요약표 ----------------
     st.subheader("🟢🔴 간략 주간 요약표")
     summary_rows = []
-    for week_start, days in sorted(weekly_data.items()):
+
+    for week, days in weekly_data.items():
         row = {}
-        total_week_minutes = 0
-        for d in ["월","화","수","목","금"]:
-            day_records = days.get(d)
-            if day_records is None or day_records.empty:
+        total_minutes = 0
+        valid_days = 0
+
+        for d in ["월", "화", "수", "목", "금"]:
+            g = days.get(d)
+            if g is None:
                 row[d] = ""
                 continue
 
-            # 출근/퇴근 시간 존재 여부 확인
-            start_time = day_records.iloc[0]["시간"] if "출근" in day_records.columns else None
-            end_time = day_records.iloc[-1]["시간"] if "퇴근" in day_records.columns and len(day_records) >=2 else None
-            daily_standard = day_records.iloc[0]["일일기준분"]
+            suffix = get_suffix(g.iloc[0]["원문"])
+            standard = g.iloc[0]["기준분"]
 
-            worked = int((day_records.iloc[-1]["시간"] - day_records.iloc[0]["시간"]).total_seconds() // 60) if len(day_records)>=2 else 0
-            minutes_diff = worked - daily_standard
-            sign = "+" if minutes_diff >= 0 else "-"
-            row[d] = f"{sign}{abs(minutes_diff)//60}시간 {abs(minutes_diff)%60}분"
+            if len(g) < 2:
+                row[d] = "기록 부족"
+                continue
 
-            total_week_minutes += worked
+            worked = int((g.iloc[-1]["시간"] - g.iloc[0]["시간"]).total_seconds() // 60)
+            diff = worked - standard
+            sign = "+" if diff >= 0 else "-"
+            row[d] = f"{sign}{abs(diff)//60}시간 {abs(diff)%60}분{suffix}"
 
-        total_diff = total_week_minutes - DAILY_STANDARD_MIN * len([v for v in days.values() if v is not None])
+            total_minutes += worked
+            valid_days += 1
+
+        total_diff = total_minutes - valid_days * DAILY_STANDARD_MIN
         sign = "+" if total_diff >= 0 else "-"
         row["주간합계"] = f"{sign}{abs(total_diff)//60}시간 {abs(total_diff)%60}분"
-        summary_rows.append((week_start, row))
 
-    if summary_rows:
-        summary_df = pd.DataFrame([r[1] for r in summary_rows])
-        summary_df.index = [r[0].strftime("%Y-%m-%d") for r in summary_rows]
+        summary_rows.append((week.strftime("%Y-%m-%d"), row))
 
-        # 색상 적용 함수
-        def color_cells(val):
-            if val == "":
-                return "background-color:white; text-align:center"
-            elif "퇴근 기록 없음" in str(val) or "출근 기록 없음" in str(val):
-                return "background-color:yellow; text-align:center"
-            elif val.startswith("+"):
-                return "background-color:lightgreen; text-align:center"
-            else:
-                return "background-color:salmon; text-align:center"
+    summary_df = pd.DataFrame([r[1] for r in summary_rows], index=[r[0] for r in summary_rows])
 
-        st.dataframe(summary_df.style.applymap(color_cells), use_container_width=True)
+    def color_cells(val):
+        if val == "":
+            return "background-color:white; text-align:center"
+        if "기록 부족" in val:
+            return "background-color:yellow; text-align:center"
+        if val.startswith("+"):
+            return "background-color:lightgreen; text-align:center"
+        return "background-color:salmon; text-align:center"
+
+    st.dataframe(summary_df.style.applymap(color_cells), use_container_width=True)
