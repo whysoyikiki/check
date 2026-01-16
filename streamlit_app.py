@@ -93,41 +93,6 @@ if uploaded_file and start_monday:
     week_worked = 0
     week_days = 0
 
-# ------------------------
-    # 간략 요약표
-    # ------------------------
-    st.subheader("🟢🔴 간략 주간 요약표")
-    summary_rows = []
-
-    for week_start, days in sorted(weekly_data.items()):
-        row = {}
-        total_week_minutes = 0
-        for d in ["월", "화", "수", "목", "금"]:
-            worked = days.get(d)
-            if worked is None:
-                row[d] = ""
-            else:
-                row[d] = worked
-                total_week_minutes += worked
-        row["주간합계"] = total_week_minutes
-        summary_rows.append((week_start, row))
-
-    if summary_rows:
-        summary_df = pd.DataFrame([r[1] for r in summary_rows])
-        summary_df.index = [r[0].strftime("%Y-%m-%d") for r in summary_rows]
-
-        def color_cells(val):
-            if val == "":
-                return "background-color:white"
-            elif val >= DAILY_STANDARD_MIN:
-                return "background-color:lightgreen"
-            else:
-                return "background-color:salmon"
-
-        st.dataframe(summary_df.style.applymap(color_cells), use_container_width=True)
-
-
-    
     # 주간 단위 기록
     weekly_data = {}
 
@@ -209,4 +174,35 @@ if uploaded_file and start_monday:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    
+    # ------------------------
+    # 간략 요약표
+    # ------------------------
+    st.subheader("🟢🔴 간략 주간 요약표")
+    summary_rows = []
+
+    for week_start, days in sorted(weekly_data.items()):
+        row = {}
+        total_week_minutes = 0
+        for d in ["월", "화", "수", "목", "금"]:
+            worked = days.get(d)
+            if worked is None:
+                row[d] = ""
+            else:
+                row[d] = worked
+                total_week_minutes += worked
+        row["주간합계"] = total_week_minutes
+        summary_rows.append((week_start, row))
+
+    if summary_rows:
+        summary_df = pd.DataFrame([r[1] for r in summary_rows])
+        summary_df.index = [r[0].strftime("%Y-%m-%d") for r in summary_rows]
+
+        def color_cells(val):
+            if val == "":
+                return "background-color:white"
+            elif val >= DAILY_STANDARD_MIN:
+                return "background-color:lightgreen"
+            else:
+                return "background-color:salmon"
+
+        st.dataframe(summary_df.style.applymap(color_cells), use_container_width=True)
