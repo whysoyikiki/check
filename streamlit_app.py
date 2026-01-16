@@ -10,8 +10,11 @@ st.title("📊 카카오톡 출퇴근 기록 분석")
 uploaded_file = st.file_uploader("📁 카카오톡 TXT 파일 업로드", type=["txt"])
 start_monday = st.text_input("📅 시작 날짜 (월요일, yyyymmdd)", placeholder="20251006")
 
-DAILY_STANDARD_MIN = 9 * 60
+BASE_STANDARD_MIN = 9 * 60
 
+# ------------------------
+# 정규식
+# ------------------------
 date_pattern = re.compile(
     r"-{5,}\s(\d{4})년\s(\d{1,2})월\s(\d{1,2})일\s([월화수목금토일])요일"
 )
@@ -20,6 +23,9 @@ msg_pattern = re.compile(
     r"^\[(?P<name>[^\]]+)\]\s+\[(?P<ampm>오전|오후)\s(?P<hour>\d{1,2}):(?P<minute>\d{2})\]"
 )
 
+# ------------------------
+# 함수
+# ------------------------
 def format_diff(minutes):
     sign = "+" if minutes >= 0 else "-"
     minutes = abs(minutes)
@@ -30,7 +36,7 @@ def get_daily_standard(text):
         return 7 * 60
     elif "반차" in text:
         return 4 * 60
-    return DAILY_STANDARD_MIN
+    return BASE_STANDARD_MIN
 
 def get_suffix(text):
     if "반반차" in text:
@@ -39,6 +45,9 @@ def get_suffix(text):
         return " (반차)"
     return ""
 
+# ------------------------
+# 데이터 로딩
+# ------------------------
 if uploaded_file and start_monday:
     try:
         start_date = datetime.strptime(start_monday, "%Y%m%d").date()
@@ -64,7 +73,7 @@ if uploaded_file and start_monday:
             continue
         if not (start_date <= current_date <= end_date):
             continue
-        if current_weekday not in ["월", "화", "수", "목", "금"]:
+        if current_weekday not in ["월","화","수","목","금"]:
             continue
 
         m = msg_pattern.match(line)
@@ -73,7 +82,6 @@ if uploaded_file and start_monday:
 
         hour = int(m.group("hour"))
         minute = int(m.group("minute"))
-
         if m.group("ampm") == "오후" and hour != 12:
             hour += 12
         if m.group("ampm") == "오전" and hour == 12:
@@ -84,7 +92,7 @@ if uploaded_file and start_monday:
             "날짜": current_date,
             "요일": current_weekday,
             "시간": datetime.combine(current_date, datetime.min.time()) + timedelta(hours=hour, minutes=minute),
-            "기준분": get_daily_standard(line),
+            "일일기준분": get_daily_standard(line),
             "원문": line
         })
 
@@ -96,10 +104,12 @@ if uploaded_file and start_monday:
     target_name = st.selectbox("👤 분석 대상자 선택", sorted(df["이름"].unique()))
     df = df[df["이름"] == target_name]
 
+    # ------------------------
+    # 상세 분석표
+    # ------------------------
     rows = []
     weekly_data = {}
-    week_worked = 0
-    week_days = 0
+    week_worked, week_standard = 0, 0
     week_start = None
 
     for date, g in df.groupby("날짜"):
@@ -114,13 +124,12 @@ if uploaded_file and start_monday:
                 "출근": "",
                 "퇴근": "",
                 "시간": "",
-                "주간합계": format_diff(week_worked - week_days * DAILY_STANDARD_MIN)
+                "주간합계": format_diff(week_worked - week_standard)
             })
-            week_worked = 0
-            week_days = 0
+            week_worked, week_standard = 0, 0
 
+        daily_standard = g.iloc[0]["일일기준분"]
         suffix = get_suffix(g.iloc[0]["원문"])
-        daily_standard = g.iloc[0]["기준분"]
 
         if len(g) >= 2:
             start, end = g.iloc[0]["시간"], g.iloc[-1]["시간"]
@@ -137,8 +146,9 @@ if uploaded_file and start_monday:
             })
 
             week_worked += worked
-            week_days += 1
+            week_standard += daily_standard
             weekly_data.setdefault(current_week_start, {})[g.iloc[0]["요일"]] = g
+
         else:
             rows.append({
                 "이름": target_name,
@@ -153,16 +163,15 @@ if uploaded_file and start_monday:
 
         week_start = current_week_start
 
-    if week_days:
-        rows.append({
-            "이름": "주간합계",
-            "날짜": "",
-            "요일": "",
-            "출근": "",
-            "퇴근": "",
-            "시간": "",
-            "주간합계": format_diff(week_worked - week_days * DAILY_STANDARD_MIN)
-        })
+    rows.append({
+        "이름": "주간합계",
+        "날짜": "",
+        "요일": "",
+        "출근": "",
+        "퇴근": "",
+        "시간": "",
+        "주간합계": format_diff(week_worked - week_standard)
+    })
 
     result_df = pd.DataFrame(rows)
     st.subheader("📋 분석 결과")
@@ -170,53 +179,55 @@ if uploaded_file and start_monday:
 
     buffer = BytesIO()
     result_df.to_excel(buffer, index=False)
-    st.download_button("⬇ 엑셀 다운로드", buffer.getvalue(), "출퇴근_기록.xlsx")
+    st.download_button(
+        "⬇ 엑셀 다운로드",
+        data=buffer.getvalue(),
+        file_name="출퇴근_기록.xlsx"
+    )
 
-    # ---------------- 요약표 ----------------
-    st.subheader("🟢🔴 간략 주간 요약표")
-    summary_rows = []
+# ------------------------
+# 간략 주간 요약표
+# ------------------------
+st.subheader("🟢🔴 간략 주간 요약표")
 
-    for week, days in weekly_data.items():
-        row = {}
-        total_minutes = 0
-        valid_days = 0
+summary_rows = []
+for week_start, days in sorted(weekly_data.items()):
+    row = {}
+    total_worked, total_standard = 0, 0
 
-        for d in ["월", "화", "수", "목", "금"]:
-            g = days.get(d)
-            if g is None:
-                row[d] = ""
-                continue
+    for d in ["월","화","수","목","금"]:
+        g = days.get(d)
+        if g is None or g.empty:
+            row[d] = ""
+            continue
 
-            suffix = get_suffix(g.iloc[0]["원문"])
-            standard = g.iloc[0]["기준분"]
+        suffix = get_suffix(g.iloc[0]["원문"])
+        standard = g.iloc[0]["일일기준분"]
 
-            if len(g) < 2:
-                row[d] = "기록 부족"
-                continue
+        if len(g) < 2:
+            row[d] = "기록 부족"
+            continue
 
-            worked = int((g.iloc[-1]["시간"] - g.iloc[0]["시간"]).total_seconds() // 60)
-            diff = worked - standard
-            sign = "+" if diff >= 0 else "-"
-            row[d] = f"{sign}{abs(diff)//60}시간 {abs(diff)%60}분{suffix}"
+        worked = int((g.iloc[-1]["시간"] - g.iloc[0]["시간"]).total_seconds() // 60)
+        diff = worked - standard
+        row[d] = format_diff(diff) + suffix
 
-            total_minutes += worked
-            valid_days += 1
+        total_worked += worked
+        total_standard += standard
 
-        total_diff = total_minutes - valid_days * DAILY_STANDARD_MIN
-        sign = "+" if total_diff >= 0 else "-"
-        row["주간합계"] = f"{sign}{abs(total_diff)//60}시간 {abs(total_diff)%60}분"
+    row["주간합계"] = format_diff(total_worked - total_standard)
+    summary_rows.append((week_start, row))
 
-        summary_rows.append((week.strftime("%Y-%m-%d"), row))
+summary_df = pd.DataFrame([r[1] for r in summary_rows])
+summary_df.index = [r[0].strftime("%Y-%m-%d") for r in summary_rows]
 
-    summary_df = pd.DataFrame([r[1] for r in summary_rows], index=[r[0] for r in summary_rows])
+def color_cells(val):
+    if val == "":
+        return "background-color:white; text-align:center"
+    if "기록 부족" in str(val):
+        return "background-color:khaki; text-align:center"
+    if val.startswith("+"):
+        return "background-color:lightgreen; text-align:center"
+    return "background-color:salmon; text-align:center"
 
-    def color_cells(val):
-        if val == "":
-            return "background-color:white; text-align:center"
-        if "기록 부족" in val:
-            return "background-color:yellow; text-align:center"
-        if val.startswith("+"):
-            return "background-color:lightgreen; text-align:center"
-        return "background-color:salmon; text-align:center"
-
-    st.dataframe(summary_df.style.applymap(color_cells), use_container_width=True)
+st.dataframe(summary_df.style.applymap(color_cells), use_container_width=True)
