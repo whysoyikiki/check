@@ -53,6 +53,9 @@ if uploaded_file and start_monday:
     records = []
     current_date, current_weekday = None, None
 
+    # ------------------------
+    # 메시지 파싱
+    # ------------------------
     for line in lines:
         line = line.strip()
         d = date_pattern.match(line)
@@ -77,9 +80,8 @@ if uploaded_file and start_monday:
         if m.group("ampm")=="오전" and hour==12:
             hour=0
 
-        # 이름 추출: 한 줄에 여러명 가능, 별칭 처리
+        # 이름 추출: 한 줄에 여러명 가능
         name_text = line.split("]")[-1]  # 메시지 끝부분에서 이름 추출
-        # 퇴근, 출장 등 텍스트 제거
         name_text = re.sub(r"(퇴근|출근|출장|반차|반반차)", "", name_text)
         names_in_line = [n.strip() for n in name_text.split() if n.strip()]
         standardized_names = [alias_map.get(n, n) for n in names_in_line]
@@ -92,7 +94,8 @@ if uploaded_file and start_monday:
                 "날짜": current_date,
                 "요일": current_weekday,
                 "시간": datetime.combine(current_date, datetime.min.time()) + timedelta(hours=hour, minutes=minute),
-                "일일기준분": daily_standard_min
+                "일일기준분": daily_standard_min,
+                "원문": line
             })
 
     df = pd.DataFrame(records)
@@ -104,6 +107,9 @@ if uploaded_file and start_monday:
     target_name = st.selectbox("👤 분석 대상자 선택", names)
     df = df[df["이름"] == target_name]
 
+    # ------------------------
+    # 전체 상세 분석표 생성
+    # ------------------------
     rows = []
     week_start = None
     week_worked = 0
@@ -133,13 +139,20 @@ if uploaded_file and start_monday:
             worked = int((end - start).total_seconds() // 60)
             daily_standard = g.iloc[0]["일일기준분"]
 
+            # 반차/반반차 표시
+            suffix = ""
+            if "반반차" in g.iloc[0]["원문"]:
+                suffix = " (반반차)"
+            elif "반차" in g.iloc[0]["원문"]:
+                suffix = " (반차)"
+
             rows.append({
                 "이름": target_name,
                 "날짜": date.strftime("%Y-%m-%d"),
                 "요일": g.iloc[0]["요일"],
                 "출근": start.strftime("%H:%M"),
                 "퇴근": end.strftime("%H:%M"),
-                "시간": format_diff(worked - daily_standard),
+                "시간": format_diff(worked - daily_standard) + suffix,
                 "주간합계": ""
             })
 
@@ -174,7 +187,6 @@ if uploaded_file and start_monday:
 
     result_df = pd.DataFrame(rows)
 
-    # 전체 상세 결과
     st.subheader("📋 분석 결과")
     st.dataframe(result_df, use_container_width=True)
 
@@ -201,7 +213,6 @@ if uploaded_file and start_monday:
             if worked is None:
                 row[d] = ""
             else:
-                # 각 날짜별 근무기준 반영
                 daily_standard = df[df['요일']==d].iloc[0]['일일기준분'] if not df[df['요일']==d].empty else DAILY_STANDARD_MIN
                 minutes_diff = worked - daily_standard
                 sign = "+" if minutes_diff >= 0 else "-"
