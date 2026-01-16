@@ -158,7 +158,7 @@ if uploaded_file and start_monday:
 
             week_worked += worked
             week_days += 1
-            weekly_data.setdefault(current_week_start, {})[g.iloc[0]["요일"]] = worked
+            weekly_data.setdefault(current_week_start, {})[g.iloc[0]["요일"]] = g
         else:
             only_time = g.iloc[0]["시간"]
             rows.append({
@@ -170,7 +170,7 @@ if uploaded_file and start_monday:
                 "시간": "퇴근 기록 없음",
                 "주간합계": ""
             })
-            weekly_data.setdefault(current_week_start, {})[g.iloc[0]["요일"]] = None
+            weekly_data.setdefault(current_week_start, {})[g.iloc[0]["요일"]] = g
 
         week_start = current_week_start
 
@@ -209,15 +209,23 @@ if uploaded_file and start_monday:
         row = {}
         total_week_minutes = 0
         for d in ["월","화","수","목","금"]:
-            worked = days.get(d)
-            if worked is None:
+            day_records = days.get(d)
+            if day_records is None or day_records.empty:
                 row[d] = ""
-            else:
-                daily_standard = df[df['요일']==d].iloc[0]['일일기준분'] if not df[df['요일']==d].empty else DAILY_STANDARD_MIN
-                minutes_diff = worked - daily_standard
-                sign = "+" if minutes_diff >= 0 else "-"
-                row[d] = f"{sign}{abs(minutes_diff)//60}시간 {abs(minutes_diff)%60}분"
-                total_week_minutes += worked
+                continue
+
+            # 출근/퇴근 시간 존재 여부 확인
+            start_time = day_records.iloc[0]["시간"] if "출근" in day_records.columns else None
+            end_time = day_records.iloc[-1]["시간"] if "퇴근" in day_records.columns and len(day_records) >=2 else None
+            daily_standard = day_records.iloc[0]["일일기준분"]
+
+            worked = int((day_records.iloc[-1]["시간"] - day_records.iloc[0]["시간"]).total_seconds() // 60) if len(day_records)>=2 else 0
+            minutes_diff = worked - daily_standard
+            sign = "+" if minutes_diff >= 0 else "-"
+            row[d] = f"{sign}{abs(minutes_diff)//60}시간 {abs(minutes_diff)%60}분"
+
+            total_week_minutes += worked
+
         total_diff = total_week_minutes - DAILY_STANDARD_MIN * len([v for v in days.values() if v is not None])
         sign = "+" if total_diff >= 0 else "-"
         row["주간합계"] = f"{sign}{abs(total_diff)//60}시간 {abs(total_diff)%60}분"
@@ -227,9 +235,12 @@ if uploaded_file and start_monday:
         summary_df = pd.DataFrame([r[1] for r in summary_rows])
         summary_df.index = [r[0].strftime("%Y-%m-%d") for r in summary_rows]
 
+        # 색상 적용 함수
         def color_cells(val):
             if val == "":
                 return "background-color:white; text-align:center"
+            elif "퇴근 기록 없음" in str(val) or "출근 기록 없음" in str(val):
+                return "background-color:yellow; text-align:center"
             elif val.startswith("+"):
                 return "background-color:lightgreen; text-align:center"
             else:
