@@ -3,9 +3,9 @@ import pandas as pd
 import re
 from datetime import datetime, timedelta
 from io import BytesIO
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 st.set_page_config(page_title="카카오톡 출퇴근 분석", layout="wide")
-
 st.title("📊 카카오톡 출퇴근 기록 분석")
 
 uploaded_file = st.file_uploader("📁 카카오톡 TXT 파일 업로드", type=["txt"])
@@ -26,6 +26,9 @@ def format_diff(minutes):
     minutes = abs(minutes)
     return f"{sign}{minutes//60}시간 {minutes%60}분"
 
+# ------------------------
+# 1. 데이터 처리
+# ------------------------
 if uploaded_file and start_monday:
     try:
         start_date = datetime.strptime(start_monday, "%Y%m%d").date()
@@ -41,7 +44,6 @@ if uploaded_file and start_monday:
 
     for line in lines:
         line = line.strip()
-
         d = date_pattern.match(line)
         if d:
             current_date = datetime(
@@ -50,9 +52,7 @@ if uploaded_file and start_monday:
             current_weekday = d.group(4)
             continue
 
-        if not current_date:
-            continue
-        if not (start_date <= current_date <= end_date):
+        if not current_date or not (start_date <= current_date <= end_date):
             continue
         if current_weekday not in ["월", "화", "수", "목", "금"]:
             continue
@@ -63,7 +63,6 @@ if uploaded_file and start_monday:
 
         hour = int(m.group("hour"))
         minute = int(m.group("minute"))
-
         if m.group("ampm") == "오후" and hour != 12:
             hour += 12
         if m.group("ampm") == "오전" and hour == 12:
@@ -83,17 +82,20 @@ if uploaded_file and start_monday:
         st.warning("데이터를 찾을 수 없습니다.")
         st.stop()
 
+    # ------------------------
+    # 2. 대상자 선택
+    # ------------------------
     names = sorted(df["이름"].unique())
     target_name = st.selectbox("👤 분석 대상자 선택", names)
-
     df = df[df["이름"] == target_name]
 
+    # ------------------------
+    # 3. 상세 분석 데이터 생성
+    # ------------------------
     rows = []
     week_start = None
     week_worked = 0
     week_days = 0
-
-    # 주간 단위 기록
     weekly_data = {}
 
     for date, g in df.groupby("날짜"):
@@ -117,7 +119,6 @@ if uploaded_file and start_monday:
             start = g.iloc[0]["시간"]
             end = g.iloc[-1]["시간"]
             worked = int((end - start).total_seconds() // 60)
-
             rows.append({
                 "이름": target_name,
                 "날짜": date.strftime("%Y-%m-%d"),
@@ -127,11 +128,8 @@ if uploaded_file and start_monday:
                 "시간": format_diff(worked - DAILY_STANDARD_MIN),
                 "주간합계": ""
             })
-
             week_worked += worked
             week_days += 1
-
-            # 요약표용
             weekly_data.setdefault(current_week_start, {})[g.iloc[0]["요일"]] = worked
         else:
             only_time = g.iloc[0]["시간"]
@@ -144,7 +142,6 @@ if uploaded_file and start_monday:
                 "시간": "퇴근 기록 없음",
                 "주간합계": ""
             })
-            # 요약표용: 기록 없음
             weekly_data.setdefault(current_week_start, {})[g.iloc[0]["요일"]] = None
 
         week_start = current_week_start
@@ -162,24 +159,19 @@ if uploaded_file and start_monday:
 
     result_df = pd.DataFrame(rows)
 
-    st.subheader("📋 분석 결과")
-    st.dataframe(result_df, use_container_width=True)
-
-    buffer = BytesIO()
-    result_df.to_excel(buffer, index=False)
-    st.download_button(
-        "⬇ 엑셀 다운로드",
-        data=buffer.getvalue(),
-        file_name="출퇴근_기록.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    # ------------------------
+    # 4. 전체 상세 결과 표시
+    # ------------------------
+    st.subheader("📋 전체 상세 분석 결과")
+    
+    # 클릭한 주간을 기억할 변수
+    if "selected_week" not in st.session_state:
+        st.session_state.selected_week = None
 
     # ------------------------
-    # 간략 요약표
+    # 5. 간략 주간 요약표 생성
     # ------------------------
-    st.subheader("🟢🔴 간략 주간 요약표")
     summary_rows = []
-
     for week_start, days in sorted(weekly_data.items()):
         row = {}
         total_week_minutes = 0
@@ -188,21 +180,70 @@ if uploaded_file and start_monday:
             if worked is None:
                 row[d] = ""
             else:
-                row[d] = worked
+                minutes_diff = worked - DAILY_STANDARD_MIN
+                sign = "+" if minutes_diff >= 0 else "-"
+                minutes_abs = abs(minutes_diff)
+                row[d] = f"{sign}{minutes_abs//60}시간 {minutes_abs%60}분"
                 total_week_minutes += worked
-        row["주간합계"] = total_week_minutes
+        total_diff = total_week_minutes - DAILY_STANDARD_MIN * len([v for v in days.values() if v is not None])
+        sign = "+" if total_diff >= 0 else "-"
+        total_diff_abs = abs(total_diff)
+        row["주간합계"] = f"{sign}{total_diff_abs//60}시간 {total_diff_abs%60}분"
         summary_rows.append((week_start, row))
 
-    if summary_rows:
-        summary_df = pd.DataFrame([r[1] for r in summary_rows])
-        summary_df.index = [r[0].strftime("%Y-%m-%d") for r in summary_rows]
+    # summary_df 생성
+    summary_df = pd.DataFrame([r[1] for r in summary_rows])
+    summary_df.index = [r[0].strftime("%Y-%m-%d") for r in summary_rows]
 
-        def color_cells(val):
-            if val == "":
-                return "background-color:white"
-            elif val >= DAILY_STANDARD_MIN:
-                return "background-color:lightgreen"
-            else:
-                return "background-color:salmon"
+    # ------------------------
+    # 6. AgGrid로 요약표 표시 (셀 클릭 이벤트)
+    # ------------------------
+    gb = GridOptionsBuilder.from_dataframe(summary_df)
+    gb.configure_default_column(cellStyle={'textAlign': 'center'})  # 글자 가운데 정렬
+    gb.configure_selection("single")  # 단일 선택
+    gb.configure_grid_options(domLayout='normal')
+    grid_options = gb.build()
 
-        st.dataframe(summary_df.style.applymap(color_cells), use_container_width=True)
+    st.subheader("🟢🔴 간략 주간 요약표 (클릭 시 해당 주간합계 강조)")
+    grid_response = AgGrid(
+        summary_df,
+        gridOptions=grid_options,
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        height=250,
+        fit_columns_on_grid_load=True,
+    )
+
+    # 선택된 주간 처리
+    if grid_response['selected_rows']:
+        selected_index = grid_response['selected_rows'][0]['index']
+        st.session_state.selected_week = selected_index
+    else:
+        st.session_state.selected_week = None
+
+    # ------------------------
+    # 7. 전체 상세 분석 결과에서 선택된 주간합계 강조
+    # ------------------------
+    def highlight_weekly(row):
+        if st.session_state.selected_week and row["이름"] == "주간합계":
+            # 해당 주간합계 행 날짜 기준 체크
+            week_str = st.session_state.selected_week
+            week_start_date = datetime.strptime(week_str, "%Y-%m-%d").date()
+            week_end_date = week_start_date + timedelta(days=4)
+            # 상세 행 중 주간합계 위치 체크
+            if row.name >= 0:  # 모든 행 대상
+                return ['background-color:yellow']*len(row)
+        return ['']*len(row)
+
+    st.dataframe(result_df.style.apply(highlight_weekly, axis=1), use_container_width=True)
+
+    # ------------------------
+    # 8. 엑셀 다운로드
+    # ------------------------
+    buffer = BytesIO()
+    result_df.to_excel(buffer, index=False)
+    st.download_button(
+        "⬇ 엑셀 다운로드",
+        data=buffer.getvalue(),
+        file_name="출퇴근_기록.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
